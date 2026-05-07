@@ -15,6 +15,7 @@ class SoundManager(context: Context) {
         ELIMINATE,
         COMBO,
         BOARD_CLEAR,
+        LEVEL_COMPLETE,
         GAME_OVER,
         INVALID_TAP
     }
@@ -73,6 +74,7 @@ class SoundManager(context: Context) {
             endFreq = 1320.0
         )
         SoundType.BOARD_CLEAR -> generateVictoryJingle()
+        SoundType.LEVEL_COMPLETE -> generateLevelCompleteFanfare()
         SoundType.GAME_OVER -> generateToneWav(
             durationMs = 400,
             startFreq = 440.0,
@@ -123,6 +125,34 @@ class SoundManager(context: Context) {
                 val t = i.toDouble() / sampleRate
                 val noteProgress = (i - startSample).toDouble() / samplesPerNote
                 val envelope = (1.0 - noteProgress) * 0.6
+                val sample = (sin(2.0 * PI * freq * t) * envelope * Short.MAX_VALUE).toInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                val offset = 44 + i * 2
+                buffer[offset] = (sample and 0xFF).toByte()
+                buffer[offset + 1] = (sample shr 8 and 0xFF).toByte()
+            }
+        }
+
+        return buffer
+    }
+
+    private fun generateLevelCompleteFanfare(): ByteArray {
+        val sampleRate = 44100
+        val noteDuration = 200
+        val notes = intArrayOf(523, 659, 784, 1047, 784, 1047) // C5 E5 G5 C6 G5 C6
+        val samplesPerNote = noteDuration * sampleRate / 1000
+        val totalSamples = notes.size * samplesPerNote
+        val buffer = ByteArray(totalSamples * 2 + 44)
+
+        writeWavHeader(buffer, totalSamples, sampleRate)
+
+        for ((noteIdx, freq) in notes.withIndex()) {
+            val startSample = noteIdx * samplesPerNote
+            val endSample = startSample + samplesPerNote
+            for (i in startSample until endSample) {
+                val t = i.toDouble() / sampleRate
+                val noteProgress = (i - startSample).toDouble() / samplesPerNote
+                val envelope = (1.0 - noteProgress * 0.5) * 0.5
                 val sample = (sin(2.0 * PI * freq * t) * envelope * Short.MAX_VALUE).toInt()
                     .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                 val offset = 44 + i * 2

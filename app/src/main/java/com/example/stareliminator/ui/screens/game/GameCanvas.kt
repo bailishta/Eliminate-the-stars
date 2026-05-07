@@ -17,17 +17,22 @@ import com.example.stareliminator.data.model.Cell
 import com.example.stareliminator.domain.CellMove
 import com.example.stareliminator.ui.components.drawStar
 import com.example.stareliminator.ui.theme.CardDark
+import com.example.stareliminator.ui.theme.PrimaryGold
 import com.example.stareliminator.ui.theme.SurfaceDark
 import com.example.stareliminator.util.EMPTY
 import com.example.stareliminator.util.GRID_COLS
 import com.example.stareliminator.util.GRID_ROWS
 import com.example.stareliminator.util.STAR_COLORS
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 
 @Composable
 fun GameCanvas(
     grid: Array<IntArray>,
     selectedGroup: Set<Cell>?,
+    lockedGroup: Set<Cell>? = null,
+    eliminationParticles: List<EliminationParticle> = emptyList(),
     isAnimating: Boolean = false,
     animationPhase: AnimationPhase = AnimationPhase.IDLE,
     animationProgress: Float = 0f,
@@ -114,7 +119,24 @@ fun GameCanvas(
                         preAnimationGrid, postGravityGrid,
                         offsetX, offsetY, cellSize)
                 } else {
-                    drawStaticStars(grid, selectedGroup, offsetX, offsetY, cellSize)
+                    drawStaticStars(grid, selectedGroup, lockedGroup, offsetX, offsetY, cellSize)
+                }
+
+                // Draw elimination particles
+                val now = System.currentTimeMillis()
+                for (p in eliminationParticles) {
+                    val age = (now - p.startTimeMillis) / 1000f
+                    if (age > 0.6f) continue
+                    val progress = (age / 0.6f).coerceIn(0f, 1f)
+                    val px = offsetX + p.startX * cellSize + cellSize / 2 + cos(p.angle) * p.speed * age * cellSize
+                    val py = offsetY + p.startY * cellSize + cellSize / 2 + sin(p.angle) * p.speed * age * cellSize
+                    val alpha = (1f - progress) * 0.9f
+                    val radius = (3f + 2f * (1f - progress)) * (cellSize / 80f)
+                    drawCircle(
+                        color = p.color.copy(alpha = alpha),
+                        radius = radius,
+                        center = Offset(px, py)
+                    )
                 }
             }
         }
@@ -124,10 +146,13 @@ fun GameCanvas(
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStaticStars(
     grid: Array<IntArray>,
     selectedGroup: Set<Cell>?,
+    lockedGroup: Set<Cell>?,
     offsetX: Float,
     offsetY: Float,
     cellSize: Float
 ) {
+    val pulseScale = 1f + 0.06f * sin((System.currentTimeMillis() / 300f).toDouble()).toFloat()
+
     for (row in 0 until GRID_ROWS) {
         for (col in 0 until GRID_COLS) {
             val color = grid[row][col]
@@ -136,31 +161,56 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStaticStars(
                 val centerY = offsetY + row * cellSize + cellSize / 2
                 val starRadius = cellSize * 0.35f
                 val starColor = STAR_COLORS[color] ?: Color.Gray
-                val isSelected = selectedGroup?.contains(Cell(row, col, color)) == true
+                val cell = Cell(row, col, color)
+                val isLocked = lockedGroup?.contains(cell) == true
 
                 // Cell border
                 val cellLeft = offsetX + col * cellSize
                 val cellTop = offsetY + row * cellSize
-                drawRect(
-                    color = Color.White.copy(alpha = 0.08f),
-                    topLeft = Offset(cellLeft, cellTop),
-                    size = Size(cellSize, cellSize),
-                    style = Stroke(width = 1f)
-                )
 
-                if (isSelected) {
+                if (isLocked) {
+                    // Bold golden border for locked group
+                    drawRect(
+                        color = PrimaryGold.copy(alpha = 0.7f + 0.3f * sin((System.currentTimeMillis() / 200f).toDouble()).toFloat()),
+                        topLeft = Offset(cellLeft, cellTop),
+                        size = Size(cellSize, cellSize),
+                        style = Stroke(width = 3f)
+                    )
+                    // Glow background for locked cells
+                    drawRect(
+                        color = PrimaryGold.copy(alpha = 0.15f),
+                        topLeft = Offset(cellLeft, cellTop),
+                        size = Size(cellSize, cellSize)
+                    )
+                    // Pulsing star
                     drawStar(
                         center = Offset(centerX, centerY),
-                        radius = starRadius * 1.15f,
-                        color = Color.White,
-                        alpha = 0.5f
+                        radius = starRadius * pulseScale,
+                        color = starColor
+                    )
+                } else {
+                    drawRect(
+                        color = Color.White.copy(alpha = 0.08f),
+                        topLeft = Offset(cellLeft, cellTop),
+                        size = Size(cellSize, cellSize),
+                        style = Stroke(width = 1f)
+                    )
+
+                    val isSelected = selectedGroup?.contains(cell) == true
+                    if (isSelected) {
+                        drawStar(
+                            center = Offset(centerX, centerY),
+                            radius = starRadius * 1.15f,
+                            color = Color.White,
+                            alpha = 0.5f
+                        )
+                    }
+                    drawStar(
+                        center = Offset(centerX, centerY),
+                        radius = starRadius,
+                        color = starColor
                     )
                 }
-                drawStar(
-                    center = Offset(centerX, centerY),
-                    radius = starRadius,
-                    color = starColor
-                )
             }
         }
     }

@@ -2,11 +2,12 @@ package com.example.stareliminator.ui.screens.game
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
@@ -17,7 +18,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -25,11 +30,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.stareliminator.ui.components.GameHud
-import com.example.stareliminator.ui.components.GameOverDialog
 import com.example.stareliminator.ui.theme.PrimaryGold
-import com.example.stareliminator.ui.theme.SurfaceDark
 import com.example.stareliminator.ui.theme.TextWhite
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.cos
 
 @Composable
 fun GameScreen(
@@ -56,6 +61,8 @@ fun GameScreen(
             GameCanvas(
                 grid = uiState.grid,
                 selectedGroup = uiState.selectedGroup,
+                lockedGroup = uiState.lockedGroup,
+                eliminationParticles = uiState.eliminationParticles,
                 isAnimating = uiState.isAnimating,
                 animationPhase = uiState.animationPhase,
                 animationProgress = uiState.animationProgress,
@@ -84,50 +91,17 @@ fun GameScreen(
         }
     }
 
-    // Level complete dialog
+    // Level complete animation overlay
     if (uiState.showLevelComplete) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = {
-                Text(
-                    text = "关卡通过！",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = PrimaryGold
-                )
-            },
-            text = {
-                Text(
-                    text = "第 ${uiState.currentLevel} 关完成\n得分: ${uiState.score} / 目标: ${uiState.levelTargetScore}",
-                    fontSize = 16.sp,
-                    color = TextWhite.copy(alpha = 0.8f)
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = { viewModel.nextLevel() },
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold)
-                ) {
-                    Text("下一关", color = Color.Black)
-                }
-            },
-            dismissButton = {
-                Button(
-                    onClick = onBackToMenu,
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceDark)
-                ) {
-                    Text("返回菜单", color = TextWhite)
-                }
-            },
-            containerColor = SurfaceDark,
-            titleContentColor = TextWhite,
-            textContentColor = TextWhite
+        LevelCompleteOverlay(
+            level = uiState.currentLevel,
+            score = uiState.score
         )
     }
 
-    // Game over dialog
-    if (uiState.isGameOver) {
-        GameOverDialog(
+    // Game over animation overlay
+    if (uiState.isGameOver && !uiState.showLevelComplete) {
+        GameOverOverlay(
             score = uiState.score,
             isBoardCleared = uiState.isBoardCleared,
             onNewGame = { viewModel.newGame() },
@@ -174,4 +148,197 @@ private fun ScorePopupView(
             }
             .graphicsLayer { alpha = animatedAlpha }
     )
+}
+
+@Composable
+private fun GameOverOverlay(
+    score: Int,
+    isBoardCleared: Boolean,
+    onNewGame: () -> Unit,
+    onBackToMenu: () -> Unit
+) {
+    var enterScale by remember { mutableStateOf(0.3f) }
+    var enterAlpha by remember { mutableStateOf(0f) }
+
+    val animatedScale by animateFloatAsState(
+        targetValue = enterScale,
+        animationSpec = tween(600)
+    )
+    val animatedAlpha by animateFloatAsState(
+        targetValue = enterAlpha,
+        animationSpec = tween(500)
+    )
+
+    LaunchedEffect(Unit) {
+        enterScale = 1f
+        enterAlpha = 1f
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = animatedAlpha },
+        contentAlignment = Alignment.Center
+    ) {
+        // Darkened background
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(color = Color.Black.copy(alpha = 0.75f * animatedAlpha))
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Game over / congrats icon
+            Text(
+                text = if (isBoardCleared) "★" else "✖",
+                fontSize = 56.sp,
+                color = if (isBoardCleared) PrimaryGold.copy(alpha = animatedAlpha)
+                        else Color(0xFFE74C3C).copy(alpha = animatedAlpha),
+                modifier = Modifier.scale(animatedScale)
+            )
+
+            Text(
+                text = if (isBoardCleared) "棋盘清空！" else "游戏结束",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isBoardCleared) PrimaryGold else Color(0xFFE74C3C),
+                modifier = Modifier
+                    .scale(animatedScale)
+                    .offset(y = 8.dp)
+            )
+
+            Text(
+                text = "最终得分",
+                fontSize = 16.sp,
+                color = TextWhite.copy(alpha = 0.7f * animatedAlpha),
+                modifier = Modifier.offset(y = 20.dp)
+            )
+
+            Text(
+                text = "$score",
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextWhite.copy(alpha = 0.9f * animatedAlpha),
+                modifier = Modifier.offset(y = 24.dp)
+            )
+
+            // Buttons
+            Button(
+                onClick = onNewGame,
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold),
+                modifier = Modifier.offset(y = 44.dp)
+            ) {
+                Text("新游戏", color = Color.Black, fontSize = 16.sp)
+            }
+
+            Button(
+                onClick = onBackToMenu,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White.copy(alpha = 0.1f)
+                ),
+                modifier = Modifier.offset(y = 52.dp)
+            ) {
+                Text("返回菜单", color = TextWhite, fontSize = 14.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LevelCompleteOverlay(level: Int, score: Int) {
+    var enterScale by remember { mutableStateOf(0.3f) }
+    var enterAlpha by remember { mutableStateOf(0f) }
+    var starRotation by remember { mutableStateOf(0f) }
+
+    val animatedScale by animateFloatAsState(
+        targetValue = enterScale,
+        animationSpec = tween(500)
+    )
+    val animatedAlpha by animateFloatAsState(
+        targetValue = enterAlpha,
+        animationSpec = tween(400)
+    )
+    val animatedRotation by animateFloatAsState(
+        targetValue = starRotation,
+        animationSpec = tween(2000)
+    )
+
+    LaunchedEffect(Unit) {
+        enterScale = 1f
+        enterAlpha = 1f
+        starRotation = 360f
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        // Dimmed background with animated sparkles
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val centerX = size.width / 2
+            val centerY = size.height / 2
+            val sparkleCount = 20
+
+            for (i in 0 until sparkleCount) {
+                val angle = (2.0 * Math.PI * i / sparkleCount) + (animatedRotation * Math.PI / 180f)
+                val radius = 120f + 40f * sin((angle * 3 + animatedRotation * 0.02f).toFloat())
+                val x = centerX + radius * cos(angle).toFloat()
+                val y = centerY + radius * sin(angle).toFloat()
+                val sparkleAlpha = (0.4f + 0.6f * sin((animatedRotation * 0.05f + i * 0.5f)).toFloat())
+                    .coerceIn(0f, 1f)
+
+                drawCircle(
+                    color = PrimaryGold.copy(alpha = sparkleAlpha * animatedAlpha),
+                    radius = 4f + 3f * sin((animatedRotation * 0.03f + i).toFloat()),
+                    center = Offset(x, y)
+                )
+            }
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Star icon
+            Text(
+                text = "★",
+                fontSize = 56.sp,
+                color = PrimaryGold.copy(alpha = animatedAlpha),
+                modifier = Modifier
+                    .scale(animatedScale)
+                    .alpha(animatedAlpha)
+                    .graphicsLayer {
+                        rotationZ = animatedRotation * 0.5f
+                    }
+            )
+
+            // Level complete title
+            Text(
+                text = "关卡通过！",
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryGold,
+                modifier = Modifier
+                    .scale(animatedScale)
+                    .alpha(animatedAlpha)
+                    .offset(y = 8.dp)
+            )
+
+            // Level info
+            Text(
+                text = "第 $level 关",
+                fontSize = 18.sp,
+                color = TextWhite.copy(alpha = 0.9f * animatedAlpha),
+                modifier = Modifier
+                    .alpha(animatedAlpha)
+                    .offset(y = 16.dp)
+            )
+
+            // Score
+            Text(
+                text = "$score 分",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextWhite.copy(alpha = 0.8f * animatedAlpha),
+                modifier = Modifier
+                    .alpha(animatedAlpha)
+                    .offset(y = 24.dp)
+            )
+        }
+    }
 }

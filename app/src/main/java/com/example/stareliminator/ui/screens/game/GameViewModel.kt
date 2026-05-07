@@ -3,6 +3,7 @@ package com.example.stareliminator.ui.screens.game
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.graphics.Color
 import com.example.stareliminator.audio.SoundManager
 import com.example.stareliminator.data.local.HighScoreEntity
 import com.example.stareliminator.data.model.Cell
@@ -19,11 +20,15 @@ import com.example.stareliminator.util.GRAVITY_ANIM_DURATION_MS
 import com.example.stareliminator.util.GRID_COLS
 import com.example.stareliminator.util.GRID_ROWS
 import com.example.stareliminator.util.MAX_COMBO_MULTIPLIER
+import com.example.stareliminator.util.STAR_COLORS
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.random.Random
 
 enum class AnimationPhase { IDLE, GRAVITY, COLLAPSE }
 
@@ -32,6 +37,16 @@ data class ScorePopup(
     val score: Int,
     val centerX: Float,
     val centerY: Float,
+    val startTimeMillis: Long
+)
+
+data class EliminationParticle(
+    val id: Long,
+    val startX: Float,
+    val startY: Float,
+    val color: Color,
+    val angle: Float,
+    val speed: Float,
     val startTimeMillis: Long
 )
 
@@ -64,7 +79,11 @@ data class GameUiState(
     val levelTargetScore: Int = 300,
     val showLevelComplete: Boolean = false,
     // Score popups
-    val scorePopups: List<ScorePopup> = emptyList()
+    val scorePopups: List<ScorePopup> = emptyList(),
+    // Two-tap system
+    val lockedGroup: Set<Cell>? = null,
+    // Elimination particles
+    val eliminationParticles: List<EliminationParticle> = emptyList()
 )
 
 class GameViewModel(
@@ -102,7 +121,9 @@ class GameViewModel(
                 score = 0,
                 currentLevel = 1,
                 levelTargetScore = 450,
-                isLoading = false
+                isLoading = false,
+                lockedGroup = null,
+                eliminationParticles = emptyList()
             )
         }
     }
@@ -111,22 +132,42 @@ class GameViewModel(
         val current = _uiState.value
         if (current.isGameOver || current.isLoading || current.isAnimating) return
 
-        val result = GameEngine.processTapWithAnimation(current.grid, row, col)
+        val lockedGroup = current.lockedGroup
+        val tappedCell = Cell(row, col, current.grid[row][col])
 
-        when (result) {
-            is MoveResult.InvalidTap -> {
-                comboCount = 0
-                soundManager.play(SoundManager.SoundType.INVALID_TAP)
-                _uiState.update {
-                    it.copy(
-                        selectedGroup = null,
-                        comboCount = 0,
-                        comboMultiplier = 1.0f,
-                        showCombo = false
-                    )
+        if (lockedGroup != null) {
+            if (tappedCell in lockedGroup) {
+                executeElimination(current, lockedGroup, tapCenterX, tapCenterY)
+                _uiState.update { it.copy(lockedGroup = null, selectedGroup = null) }
+            } else {
+                val newGroup = FloodFill.findConnectedGroup(current.grid, row, col)
+                if (newGroup.size >= 2) {
+                    _uiState.update { it.copy(lockedGroup = newGroup, selectedGroup = newGroup) }
+                } else {
+                    soundManager.play(SoundManager.SoundType.INVALID_TAP)
+                    _uiState.update { it.copy(lockedGroup = null, selectedGroup = null) }
                 }
             }
+        } else {
+            val group = FloodFill.findConnectedGroup(current.grid, row, col)
+            if (group.size >= 2) {
+                _uiState.update { it.copy(lockedGroup = group, selectedGroup = group) }
+            } else {
+                soundManager.play(SoundManager.SoundType.INVALID_TAP)
+            }
+        }
+    }
 
+    private fun executeElimination(
+        current: GameUiState,
+        group: Set<Cell>,
+        tapCenterX: Float,
+        tapCenterY: Float
+    ) {
+        val firstCell = group.first()
+        val result = GameEngine.processTapWithAnimation(current.grid, firstCell.row, firstCell.col)
+
+        when (result) {
             is MoveResult.AnimatedSuccessful -> {
                 starsEliminatedTotal += result.eliminatedGroup.size
                 comboCount++
@@ -153,7 +194,10 @@ class GameViewModel(
                     startTimeMillis = System.currentTimeMillis()
                 )
 
-                // Phase 0: Store animation state, starting with gravity
+                // Generate elimination particles
+                val particles = generateEliminationParticles(result.eliminatedGroup)
+                val combinedParticles = _uiState.value.eliminationParticles + particles
+
                 _uiState.update {
                     val gridWithHoles = Array(GRID_ROWS) { r -> current.grid[r].copyOf() }
                     for (cell in result.eliminatedGroup) {
@@ -174,12 +218,21 @@ class GameViewModel(
                         comboCount = comboCount,
                         comboMultiplier = multiplier,
                         showCombo = showCombo,
-                        scorePopups = it.scorePopups + newPopup
+                        scorePopups = it.scorePopups + newPopup,
+                        eliminationParticles = combinedParticles
                     )
                 }
 
                 viewModelScope.launch {
-                    // Auto-remove popup after 1 second
+                    launch {
+                        kotlinx.coroutines.delay(600)
+                        _uiState.update { state ->
+                            state.copy(eliminationParticles = state.eliminationParticles.filter { p ->
+                                particles.none { it.id == p.id }
+                            })
+                        }
+                    }
+
                     launch {
                         kotlinx.coroutines.delay(1000)
                         _uiState.update { state ->
@@ -187,27 +240,23 @@ class GameViewModel(
                         }
                     }
 
-                    // Run gravity animation (manual frame loop, avoids Compose Animatable dependency)
                     runAnimation(GRAVITY_ANIM_DURATION_MS) { progress ->
                         _uiState.update { it.copy(animationProgress = progress) }
                     }
 
-                    // Switch to collapse phase
                     _uiState.update {
                         it.copy(animationPhase = AnimationPhase.COLLAPSE, animationProgress = 0f)
                     }
 
-                    // Run collapse animation
                     runAnimation(COLLAPSE_ANIM_DURATION_MS) { progress ->
                         _uiState.update { it.copy(animationProgress = progress) }
                     }
 
-                    // Animation complete - finalize
                     val newScore = _uiState.value.score
                     if (result.isGameOver) {
                         val levelTarget = _uiState.value.levelTargetScore
                         if (newScore >= levelTarget) {
-                            // Level complete
+                            soundManager.play(SoundManager.SoundType.LEVEL_COMPLETE)
                             _uiState.update {
                                 it.copy(
                                     grid = result.finalGrid,
@@ -221,8 +270,11 @@ class GameViewModel(
                                     showLevelComplete = true
                                 )
                             }
+                            launch {
+                                kotlinx.coroutines.delay(2500)
+                                nextLevel()
+                            }
                         } else {
-                            // Game over - didn't reach target
                             soundManager.play(SoundManager.SoundType.GAME_OVER)
                             _uiState.update {
                                 it.copy(
@@ -260,6 +312,30 @@ class GameViewModel(
         }
     }
 
+    private fun generateEliminationParticles(group: Set<Cell>): List<EliminationParticle> {
+        val now = System.currentTimeMillis()
+        val particles = mutableListOf<EliminationParticle>()
+        for (cell in group) {
+            val color = STAR_COLORS[cell.color] ?: Color.Gray
+            val count = 4 + Random.nextInt(4)
+            for (i in 0 until count) {
+                val angle = (2.0 * Math.PI * i / count) + Random.nextDouble(-0.3, 0.3)
+                particles.add(
+                    EliminationParticle(
+                        id = now + cell.row * 100 + cell.col + i,
+                        startX = cell.col.toFloat(),
+                        startY = cell.row.toFloat(),
+                        color = color,
+                        angle = angle.toFloat(),
+                        speed = 3f + Random.nextFloat() * 5f,
+                        startTimeMillis = now
+                    )
+                )
+            }
+        }
+        return particles
+    }
+
     fun previewGroup(row: Int, col: Int) {
         val current = _uiState.value
         if (current.isGameOver || current.isAnimating) return
@@ -271,7 +347,9 @@ class GameViewModel(
     }
 
     fun clearPreview() {
-        _uiState.update { it.copy(selectedGroup = null) }
+        val current = _uiState.value
+        // Don't clear the locked group highlight
+        _uiState.update { it.copy(selectedGroup = current.lockedGroup) }
     }
 
     fun nextLevel() {
@@ -287,7 +365,9 @@ class GameViewModel(
                 showLevelComplete = false,
                 isGameOver = false,
                 isBoardCleared = false,
-                selectedGroup = null
+                selectedGroup = null,
+                lockedGroup = null,
+                eliminationParticles = emptyList()
             )
         }
     }
@@ -318,7 +398,9 @@ class GameViewModel(
                         score = savedGame.score,
                         isGameOver = false,
                         isLoading = false,
-                        hasSavedGame = false
+                        hasSavedGame = false,
+                        lockedGroup = null,
+                        eliminationParticles = emptyList()
                     )
                 }
             }
